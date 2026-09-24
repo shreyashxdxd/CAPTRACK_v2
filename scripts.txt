@@ -1,0 +1,6 @@
+npm install        
+npm install lucide-react recharts tesseract.js react-image-crop   
+
+Prediction Algorithm:
+Weighted Moving Average (WMA)
+Forecast= ∑ ( Spendingi ​× Weighti ​)
