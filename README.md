@@ -1,4 +1,4 @@
-# CAPTRACK
+# CAPTRACK_v2 (Second Prototype of the same Project)
 
 > Track your capital. Know where your money goes.
 
