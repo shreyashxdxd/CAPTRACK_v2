@@ -4,9 +4,9 @@
 
 CAPTRACK is a lightweight, mobile-friendly personal spending analysis web app that helps users understand how they spend their money.
 
-Users simply enter their monthly salary, add their expenses with categories, and CAPTRACK generates a visual breakdown of their spending.
+Users create a local account, enter their monthly salary, add expenses with categories, and CAPTRACK generates a visual breakdown of their spending.
 
-No registration. No complicated dashboards. Just enter your numbers and understand your spending.
+Account and expense data is stored in MySQL through the local backend. Receipt images are processed in the browser by OCR and are never uploaded or stored.
 
 ---
 
@@ -24,7 +24,12 @@ No registration. No complicated dashboards. Just enter your numbers and understa
 - Automatic spending insight
 - Fully responsive design
 - Fast client-side calculations
-- No account or registration required
+- Local account registration and login
+- MySQL-backed user and expense persistence
+- Receipt OCR without receipt storage
+- Spending timeline and recurring expense patterns
+- Twelve-week spending heatmap
+- Persistent financial goals with progress tracking
 
 ---
 
@@ -131,6 +136,8 @@ Entertainment     10%
 - JavaScript
 - npm
 - Git
+- Node.js and Express
+- MySQL (XAMPP)
 
 ---
 
@@ -142,8 +149,12 @@ Entertainment     10%
 │
 ├── src/
 │   ├── App.jsx
+│   ├── api.js
 │   ├── main.jsx
 │   └── index.css
+├── server/
+│   ├── index.js
+│   └── schema.sql
 │
 ├── index.html
 ├── package.json
@@ -163,6 +174,7 @@ Make sure you have:
 - Node.js
 - npm
 - Git
+- XAMPP with Apache and MySQL available
 
 installed on your system.
 
@@ -178,13 +190,32 @@ cd CAPTRACK
 
 npm install
 
+### Configure MySQL
+
+1. Start MySQL in the XAMPP Control Panel.
+2. Open phpMyAdmin at `http://localhost/phpmyadmin`.
+3. Import `server/schema.sql`. It creates the `captrack` database and only the `users` and `expenses` tables.
+4. Copy `.env.example` to `.env` and update the database values if your XAMPP MySQL setup uses a password.
+
+The backend stores user name, username, a password hash, salary, and expense fields. It has no receipt or image column and no file-upload endpoint.
+
 ### Start the development server
 
 npm run dev
 
+In a second terminal, start the API:
+
+npm run server
+
+Or start both services together:
+
+npm run dev:full
+
 The application will be available at:
 
 http://localhost:5173
+
+The API runs at `http://localhost:3001`.
 
 ---
 

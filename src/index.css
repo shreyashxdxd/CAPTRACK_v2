@@ -1,5 +1,18 @@
 @import "tailwindcss";
 
+@theme {
+  --color-zinc-950: #08111f;
+  --color-zinc-900: #0d1b2f;
+  --color-zinc-800: #1b2d46;
+  --color-zinc-700: #2d4563;
+  --color-zinc-600: #71839a;
+  --color-zinc-500: #91a4bb;
+  --color-zinc-400: #b7c9dc;
+  --color-zinc-300: #c9e2f7;
+  --color-zinc-200: #dceeff;
+  --color-zinc-100: #edf7ff;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -18,4 +31,25 @@ input[type="number"]::-webkit-outer-spin-button {
 
 input[type="number"] {
   appearance: textfield;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-up {
+  animation: fade-up 500ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-up {
+    animation: none;
+  }
 }

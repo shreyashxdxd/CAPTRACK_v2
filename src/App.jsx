@@ -1,10 +1,21 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import ReceiptScanner from "./components/ReceiptScanner";
+import {
+  createExpense,
+  deleteExpense,
+  deleteGoal,
+  createGoal,
+  loadGoals,
+  loadAccount,
+  loginUser,
+  registerUser,
+} from "./api";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
 import {
   ArrowLeft,
   ArrowRight,
   BarChart3,
+  CalendarDays,
   Car,
   Check,
   Gamepad2,
@@ -13,10 +24,12 @@ import {
   Home,
   Plus,
   Receipt,
+  Repeat2,
   ShoppingBag,
   Sparkles,
   Trash2,
   TrendingUp,
+  Target,
   Utensils,
   UserPlus,
   UserRound,
@@ -34,54 +47,94 @@ const categories = [
   { name: "Other", icon: Receipt },
 ];
 
-const weeklyData = [
-  { day: "Mon", amount: 1240 },
-  { day: "Tue", amount: 860 },
-  { day: "Wed", amount: 1980 },
-  { day: "Thu", amount: 1120 },
-  { day: "Fri", amount: 2460 },
-  { day: "Sat", amount: 1740 },
-  { day: "Sun", amount: 920 },
-];
-
-const previousWeeklyData = [
-  { day: "Mon", amount: 1420 },
-  { day: "Tue", amount: 1180 },
-  { day: "Wed", amount: 1760 },
-  { day: "Thu", amount: 1340 },
-  { day: "Fri", amount: 2320 },
-  { day: "Sat", amount: 1960 },
-  { day: "Sun", amount: 1080 },
-];
-
-const weeklyCategories = [
-  { name: "Food", amount: 4380, color: "bg-white" },
-  { name: "Transport", amount: 2140, color: "bg-zinc-400" },
-  { name: "Personal", amount: 1800, color: "bg-zinc-600" },
-  { name: "Bills", amount: 1200, color: "bg-zinc-700" },
-];
-
-const weeklyTotal = weeklyData.reduce((total, day) => total + day.amount, 0);
-const previousWeeklyTotal = previousWeeklyData.reduce(
-  (total, day) => total + day.amount,
-  0
-);
-const predictedWeeklySpend = Math.round(
-  (previousWeeklyTotal + weeklyTotal) / 2
-);
-const predictedMonthlySpend = Math.round(predictedWeeklySpend * 4.33);
-const weeklyTrendPercentage =
-  ((weeklyTotal - previousWeeklyTotal) / previousWeeklyTotal) * 100;
-const highestWeeklySpend = Math.max(...weeklyData.map((day) => day.amount));
-const loggedInSalary = 50000;
-const weeklyBudget = loggedInSalary / 4;
-
 function formatCurrency(value) {
   return `₹${Number(value).toLocaleString("en-IN")}`;
 }
 
+function startOfDay(date) {
+  const result = new Date(date);
+  result.setHours(0, 0, 0, 0);
+  return result;
+}
+
+function buildDailyData(expenses, weekOffset = 0) {
+  const today = startOfDay(new Date());
+  const endDate = new Date(today);
+  endDate.setDate(today.getDate() - weekOffset * 7);
+  const firstDate = new Date(endDate);
+  firstDate.setDate(endDate.getDate() - 6);
+
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(firstDate);
+    date.setDate(firstDate.getDate() + index);
+    const nextDate = new Date(date);
+    nextDate.setDate(date.getDate() + 1);
+    const amount = expenses.reduce((total, expense) => {
+      const expenseDate = new Date(expense.createdAt || expense.created_at);
+      return expenseDate >= date && expenseDate < nextDate
+        ? total + Number(expense.amount)
+        : total;
+    }, 0);
+
+    return {
+      day: date.toLocaleDateString("en-IN", { weekday: "short" }),
+      amount,
+    };
+  });
+}
+
+function getExpenseDate(expense) {
+  return new Date(expense.createdAt || expense.created_at);
+}
+
+function buildHeatmap(expenses) {
+  const today = startOfDay(new Date());
+  const firstDate = new Date(today);
+  firstDate.setDate(today.getDate() - 83);
+
+  return Array.from({ length: 84 }, (_, index) => {
+    const date = new Date(firstDate);
+    date.setDate(firstDate.getDate() + index);
+    const nextDate = new Date(date);
+    nextDate.setDate(date.getDate() + 1);
+    const amount = expenses.reduce((total, expense) => {
+      const expenseDate = getExpenseDate(expense);
+      return expenseDate >= date && expenseDate < nextDate
+        ? total + Number(expense.amount)
+        : total;
+    }, 0);
+
+    return { date, amount };
+  });
+}
+
+function getRecurringExpenses(expenses) {
+  const grouped = {};
+
+  expenses.forEach((expense) => {
+    const description = expense.description?.trim().toLowerCase();
+    if (!description) return;
+    const key = `${expense.category}:${description}`;
+    grouped[key] ||= [];
+    grouped[key].push(expense);
+  });
+
+  return Object.values(grouped)
+    .filter((items) => items.length >= 2)
+    .map((items) => ({
+      category: items[0].category,
+      description: items[0].description,
+      count: items.length,
+      average: items.reduce((total, item) => total + Number(item.amount), 0) / items.length,
+    }))
+    .sort((first, second) => second.average - first.average);
+}
+
 function App() {
   const [screen, setScreen] = useState("home");
+  const [user, setUser] = useState(null);
+  const [authToken, setAuthToken] = useState(() => localStorage.getItem("captrack_token"));
+  const [authLoading, setAuthLoading] = useState(Boolean(authToken));
 
   const [salary, setSalary] = useState("");
   const [expenses, setExpenses] = useState([]);
@@ -96,10 +149,21 @@ function App() {
   const [dashboardCategory, setDashboardCategory] = useState("Food");
   const [dashboardDescription, setDashboardDescription] = useState("");
   const [showDashboardExpenseForm, setShowDashboardExpenseForm] = useState(false);
+  const [goals, setGoals] = useState([]);
+  const [goalTitle, setGoalTitle] = useState("");
+  const [goalTargetAmount, setGoalTargetAmount] = useState("");
+  const [goalSavedAmount, setGoalSavedAmount] = useState("");
   const [loginUsername, setLoginUsername] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
-  const [signupNotice, setSignupNotice] = useState(false);
+  const [registerName, setRegisterName] = useState("");
+  const [registerUsername, setRegisterUsername] = useState("");
+  const [registerPassword, setRegisterPassword] = useState("");
+  const [registerSalary, setRegisterSalary] = useState("");
+  const [registerError, setRegisterError] = useState("");
+  const [apiError, setApiError] = useState("");
+  const loggedInSalary = Number(user?.salary || salary || 0);
+  const weeklyBudget = loggedInSalary / 4;
   const totalSpent = expenses.reduce(
     (total, expense) => total + expense.amount,
     0
@@ -128,26 +192,109 @@ function App() {
       (dashboardCategoryTotals[expense.category] || 0) + expense.amount;
   });
 
+  const weeklyData = buildDailyData(dashboardExpenses);
+  const previousWeeklyData = buildDailyData(dashboardExpenses, 1);
+  const weeklyTotal = weeklyData.reduce((total, day) => total + day.amount, 0);
+  const previousWeeklyTotal = previousWeeklyData.reduce(
+    (total, day) => total + day.amount,
+    0
+  );
+  const predictedWeeklySpend = weeklyTotal || previousWeeklyTotal
+    ? Math.round((previousWeeklyTotal + weeklyTotal) / 2)
+    : 0;
+  const predictedMonthlySpend = Math.round(predictedWeeklySpend * 4.33);
+  const weeklyTrendPercentage = previousWeeklyTotal > 0
+    ? ((weeklyTotal - previousWeeklyTotal) / previousWeeklyTotal) * 100
+    : 0;
+  const highestWeeklySpend = Math.max(...weeklyData.map((day) => day.amount), 0);
+  const weeklyCategories = Object.entries(dashboardCategoryTotals)
+    .map(([name, amount]) => ({ name, amount, color: "bg-zinc-400" }))
+    .sort((first, second) => second.amount - first.amount);
+  const lowestSpendDay = weeklyData.filter((day) => day.amount > 0).sort(
+    (first, second) => first.amount - second.amount
+  )[0];
+  const topCategory = weeklyCategories[0];
+  const weeklyRhythm = weeklyTotal === 0
+    ? "No data yet"
+    : highestWeeklySpend > weeklyTotal / 7 * 1.75
+      ? "Variable"
+      : "Steady";
+
   const weeklyBudgetRemaining = Math.max(weeklyBudget - weeklyTotal, 0);
-  const weeklyBudgetPercentage = (weeklyTotal / loggedInSalary) * 100;
+  const weeklyBudgetPercentage = loggedInSalary > 0 ? (weeklyTotal / loggedInSalary) * 100 : 0;
+  const heatmap = buildHeatmap(dashboardExpenses);
+  const recurringExpenses = getRecurringExpenses(dashboardExpenses);
+
+  useEffect(() => {
+    if (!authToken) return;
+
+    Promise.all([loadAccount(authToken), loadGoals(authToken)])
+      .then(([account, goalResult]) => {
+        const { user: accountUser, expenses: accountExpenses } = account;
+        setUser(accountUser);
+        setSalary(String(accountUser.salary));
+        setExpenses(accountExpenses);
+        setDashboardExpenses(accountExpenses);
+        setGoals(goalResult.goals);
+        setScreen("dashboard");
+      })
+      .catch(() => {
+        localStorage.removeItem("captrack_token");
+        setAuthToken(null);
+      })
+      .finally(() => setAuthLoading(false));
+  }, [authToken]);
+
+    if (authLoading) {
+      return <main className="min-h-screen bg-[#08111f]" />;
+    }
 
   const handleSalarySubmit = () => {
     if (!salary || Number(salary) <= 0) return;
     setScreen("expenses");
   };
 
-  const handleLogin = () => {
-    if (loginUsername === "Arpit_Bala" && loginPassword === "Arpit@123") {
+  const handleLogin = async () => {
+    try {
+      const result = await loginUser({ username: loginUsername, password: loginPassword });
+      localStorage.setItem("captrack_token", result.token);
+      setAuthToken(result.token);
+      setUser(result.user);
+      setSalary(String(result.user.salary));
+      setExpenses(result.expenses);
+      setDashboardExpenses(result.expenses);
+      loadGoals(result.token).then((goalResult) => setGoals(goalResult.goals));
       setLoginError("");
-      setSalary(String(loggedInSalary));
       setScreen("dashboard");
-      return;
+    } catch (error) {
+      setLoginError(error.message);
     }
-
-    setLoginError("Those credentials do not match. Please try again.");
   };
 
-  const handleAddExpense = () => {
+  const handleRegister = async () => {
+    try {
+      const result = await registerUser({
+        name: registerName,
+        username: registerUsername,
+        password: registerPassword,
+        salary: registerSalary,
+      });
+      localStorage.setItem("captrack_token", result.token);
+      setAuthToken(result.token);
+      setUser(result.user);
+      setSalary(String(result.user.salary));
+      setExpenses([]);
+      setDashboardExpenses([]);
+      setGoals([]);
+      loadGoals(result.token).then((goalResult) => setGoals(goalResult.goals));
+      setRegisterError("");
+      setScreen("dashboard");
+    } catch (error) {
+      setRegisterError(error.message);
+    }
+  };
+
+  const handleAddExpense = async () => {
     if (!amount || Number(amount) <= 0) return;
 
     const newExpense = {
@@ -157,7 +304,17 @@ function App() {
       description: description.trim(),
     };
 
-    setExpenses((current) => [...current, newExpense]);
+    try {
+      const savedExpense = authToken
+        ? (await createExpense(authToken, newExpense)).expense
+        : newExpense;
+      setExpenses((current) => [...current, savedExpense]);
+      setDashboardExpenses((current) => [...current, savedExpense]);
+      setApiError("");
+    } catch (error) {
+      setApiError(error.message);
+      return;
+    }
 
     setAmount("");
     setDescription("");
@@ -166,21 +323,28 @@ function App() {
     setLoginUsername("");
     setLoginPassword("");
     setLoginError("");
-    setSignupNotice(false);
   };
 
-  const handleAddDashboardExpense = () => {
+  const handleAddDashboardExpense = async () => {
     if (!dashboardAmount || Number(dashboardAmount) <= 0) return;
 
-    setDashboardExpenses((current) => [
-      ...current,
-      {
-        id: Date.now(),
-        amount: Number(dashboardAmount),
-        category: dashboardCategory,
-        description: dashboardDescription.trim(),
-      },
-    ]);
+    const newExpense = {
+      amount: Number(dashboardAmount),
+      category: dashboardCategory,
+      description: dashboardDescription.trim(),
+    };
+
+    try {
+      const savedExpense = authToken
+        ? (await createExpense(authToken, newExpense)).expense
+        : { id: Date.now(), ...newExpense };
+      setDashboardExpenses((current) => [...current, savedExpense]);
+      setExpenses((current) => [...current, savedExpense]);
+      setApiError("");
+    } catch (error) {
+      setApiError(error.message);
+      return;
+    }
 
     setDashboardAmount("");
     setDashboardCategory("Food");
@@ -188,10 +352,42 @@ function App() {
     setShowDashboardExpenseForm(false);
   };
 
-  const handleDeleteExpense = (id) => {
-    setExpenses((current) =>
-      current.filter((expense) => expense.id !== id)
-    );
+  const handleDeleteExpense = async (id) => {
+    try {
+      if (authToken) await deleteExpense(authToken, id);
+      setExpenses((current) => current.filter((expense) => expense.id !== id));
+      setDashboardExpenses((current) => current.filter((expense) => expense.id !== id));
+    } catch (error) {
+      setApiError(error.message);
+    }
+  };
+
+  const handleCreateGoal = async () => {
+    if (!goalTitle.trim() || !goalTargetAmount || !authToken) return;
+
+    try {
+      const { goal } = await createGoal(authToken, {
+        title: goalTitle,
+        targetAmount: Number(goalTargetAmount),
+        savedAmount: Number(goalSavedAmount || 0),
+      });
+      setGoals((current) => [goal, ...current]);
+      setGoalTitle("");
+      setGoalTargetAmount("");
+      setGoalSavedAmount("");
+      setApiError("");
+    } catch (error) {
+      setApiError(error.message);
+    }
+  };
+
+  const handleDeleteGoal = async (id) => {
+    try {
+      await deleteGoal(authToken, id);
+      setGoals((current) => current.filter((goal) => goal.id !== id));
+    } catch (error) {
+      setApiError(error.message);
+    }
   };
 
   const resetApp = () => {
@@ -207,15 +403,28 @@ function App() {
     setDashboardCategory("Food");
     setDashboardDescription("");
     setShowDashboardExpenseForm(false);
+    setGoals([]);
+    setUser(null);
+    setAuthToken(null);
+    localStorage.removeItem("captrack_token");
   };
 
   return (
-  <main className="min-h-screen bg-[#070707] text-white selection:bg-white selection:text-black">
+  <main className="min-h-screen bg-[#08111f] text-white selection:bg-white selection:text-black">
 
     {showOCR && (
       <ReceiptScanner
-        onExpenseDetected={(newExpense) => {
-          setExpenses((current) => [...current, newExpense]);
+        onExpenseDetected={async (newExpense) => {
+          try {
+            const savedExpense = authToken
+              ? (await createExpense(authToken, newExpense)).expense
+              : { id: Date.now(), ...newExpense };
+            setExpenses((current) => [...current, savedExpense]);
+            setDashboardExpenses((current) => [...current, savedExpense]);
+            setApiError("");
+          } catch (error) {
+            setApiError(error.message);
+          }
         }}
         onClose={() => {
           setShowOCR(false);
@@ -229,11 +438,16 @@ function App() {
       </div>
 
       <div className="relative mx-auto flex min-h-screen w-full max-w-6xl flex-col px-5 py-5 sm:px-8 lg:px-12">
+        {apiError && (
+          <div className="mt-4 border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm text-blue-200">
+            {apiError}
+          </div>
+        )}
         {/* Header */}
         <header className="flex items-center justify-between">
   {screen !== "home" ? (
     <button
-      onClick={resetApp}
+      onClick={() => setScreen(user ? "dashboard" : "home")}
       className="text-sm font-black tracking-[0.28em] text-white"
     >
       CAPTRACK
@@ -317,7 +531,10 @@ function App() {
           </button>
 
           <button
-            onClick={() => setSignupNotice(true)}
+            onClick={() => {
+              setRegisterError("");
+              setScreen("register");
+            }}
             className="flex items-center gap-3 rounded-2xl border border-zinc-800 bg-zinc-950 px-5 py-5 text-left transition hover:border-zinc-600 hover:bg-zinc-900"
           >
             <UserPlus size={19} className="text-zinc-400" />
@@ -342,11 +559,6 @@ function App() {
           </button>
         </div>
 
-        {signupNotice && (
-          <div className="mt-4 border border-zinc-800 bg-zinc-950 px-5 py-4 text-sm text-zinc-300">
-            Sign Up option is currently unavailable.
-          </div>
-        )}
       </div>
     </div>
   </section>
@@ -398,13 +610,87 @@ function App() {
           placeholder="Password"
         />
 
-        {loginError && <p className="mt-4 text-sm text-red-300">{loginError}</p>}
+        {loginError && <p className="mt-4 text-sm text-blue-200">{loginError}</p>}
 
         <button
           onClick={handleLogin}
           className="mt-6 flex w-full items-center justify-between rounded-xl bg-white px-5 py-4 font-bold text-black transition hover:bg-zinc-200"
         >
           LOGIN
+          <ArrowRight size={19} />
+        </button>
+      </div>
+    </div>
+  </section>
+)}
+
+        {/* ================= REGISTER ================= */}
+{screen === "register" && (
+  <section className="flex flex-1 items-center justify-center py-16">
+    <div className="w-full max-w-md">
+      <button
+        onClick={() => setScreen("home")}
+        className="mb-12 flex items-center gap-2 text-sm text-zinc-600 transition hover:text-white"
+      >
+        <ArrowLeft size={16} />
+        Back
+      </button>
+
+      <div className="border border-zinc-800 bg-zinc-950 p-6 sm:p-8">
+        <p className="text-xs font-bold uppercase tracking-[0.2em] text-zinc-600">
+          Create your account
+        </p>
+        <h2 className="mt-3 text-4xl font-black">Start tracking.</h2>
+        <p className="mt-3 text-sm leading-6 text-zinc-500">
+          Your account stores your name, salary, and expenses in your local MySQL database.
+        </p>
+
+        <label className="mt-8 block text-xs font-semibold uppercase tracking-widest text-zinc-600">Name</label>
+        <input
+          autoFocus
+          value={registerName}
+          onChange={(event) => setRegisterName(event.target.value)}
+          className="mt-2 w-full rounded-xl border border-zinc-800 bg-black px-4 py-4 outline-none focus:border-zinc-500"
+          placeholder="Your name"
+        />
+
+        <label className="mt-6 block text-xs font-semibold uppercase tracking-widest text-zinc-600">Monthly salary</label>
+        <input
+          type="number"
+          min="0"
+          value={registerSalary}
+          onChange={(event) => setRegisterSalary(event.target.value)}
+          className="mt-2 w-full rounded-xl border border-zinc-800 bg-black px-4 py-4 outline-none focus:border-zinc-500"
+          placeholder="50000"
+        />
+
+        <label className="mt-6 block text-xs font-semibold uppercase tracking-widest text-zinc-600">Username</label>
+        <input
+          value={registerUsername}
+          onChange={(event) => setRegisterUsername(event.target.value)}
+          className="mt-2 w-full rounded-xl border border-zinc-800 bg-black px-4 py-4 outline-none focus:border-zinc-500"
+          placeholder="Choose a username"
+        />
+
+        <label className="mt-6 block text-xs font-semibold uppercase tracking-widest text-zinc-600">Password</label>
+        <input
+          type="password"
+          value={registerPassword}
+          onChange={(event) => setRegisterPassword(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") handleRegister();
+          }}
+          className="mt-2 w-full rounded-xl border border-zinc-800 bg-black px-4 py-4 outline-none focus:border-zinc-500"
+          placeholder="At least 6 characters"
+        />
+
+        {registerError && <p className="mt-4 text-sm text-blue-200">{registerError}</p>}
+
+        <button
+          onClick={handleRegister}
+          className="mt-6 flex w-full items-center justify-between rounded-xl bg-white px-5 py-4 font-bold text-black transition hover:bg-zinc-200"
+        >
+          CREATE ACCOUNT
           <ArrowRight size={19} />
         </button>
       </div>
@@ -422,7 +708,7 @@ function App() {
             Weekly overview
           </p>
           <h2 className="mt-3 text-4xl font-black tracking-tight sm:text-5xl">
-            Good to see you, Arpit.
+            Good to see you, {user?.name || "there"}.
           </h2>
           <p className="mt-3 text-zinc-400">
             A clear look at the week behind you.
@@ -430,7 +716,7 @@ function App() {
         </div>
 
         <span className="w-fit rounded-full border border-zinc-800 px-4 py-2 text-xs font-semibold text-zinc-400">
-          18 - 24 September 2026
+          Last 7 days
         </span>
       </div>
 
@@ -438,20 +724,24 @@ function App() {
         <div className="rounded-3xl bg-white p-6 text-black">
           <p className="text-sm text-zinc-500">Total spent this week</p>
           <p className="mt-2 text-5xl font-black">{formatCurrency(weeklyTotal)}</p>
-          <p className="mt-3 flex items-center gap-2 text-sm font-semibold text-emerald-700">
-            <TrendingUp size={15} /> 8.4% lower than last week
-          </p>
+          {dashboardExpenses.length > 0 && previousWeeklyTotal > 0 ? (
+            <p className="mt-3 flex items-center gap-2 text-sm font-semibold text-blue-300">
+              <TrendingUp size={15} /> {Math.abs(weeklyTrendPercentage).toFixed(1)}% {weeklyTrendPercentage <= 0 ? "lower" : "higher"} than last week
+            </p>
+          ) : (
+            <p className="mt-3 text-sm text-zinc-500">No previous week data yet.</p>
+          )}
         </div>
         <div className="rounded-3xl border border-zinc-800 bg-zinc-950 p-6">
           <p className="text-sm text-zinc-600">Daily average</p>
           <p className="mt-2 text-3xl font-black">{formatCurrency(Math.round(weeklyTotal / 7))}</p>
-          <p className="mt-3 text-sm text-zinc-500">Your Friday was the busiest.</p>
+          <p className="mt-3 text-sm text-zinc-500">Based on your last 7 days.</p>
         </div>
         <div className="rounded-3xl border border-zinc-800 bg-zinc-950 p-6">
           <p className="text-sm text-zinc-600">Weekly budget</p>
           <p className="mt-2 text-3xl font-black">{formatCurrency(weeklyBudgetRemaining)}</p>
           <p className="mt-3 text-sm text-zinc-500">
-            {weeklyBudgetPercentage.toFixed(1)}% of ₹50,000 salary used
+            {weeklyBudgetPercentage.toFixed(1)}% of {formatCurrency(loggedInSalary)} salary used
           </p>
         </div>
       </div>
@@ -470,6 +760,8 @@ function App() {
           <TrendingUp size={22} className="text-zinc-500" />
         </div>
 
+        {dashboardExpenses.length > 0 ? (
+        <>
         <div className="mt-7 grid gap-3 sm:grid-cols-3">
           <div className="rounded-2xl bg-white p-5 text-black">
             <p className="text-xs font-semibold uppercase tracking-widest text-zinc-500">
@@ -492,10 +784,17 @@ function App() {
             <p className="mt-3 text-3xl font-black">
               {((predictedMonthlySpend / loggedInSalary) * 100).toFixed(1)}%
             </p>
-            <p className="mt-2 text-sm text-zinc-500">Of your ₹50,000 monthly salary</p>
+            <p className="mt-2 text-sm text-zinc-500">Of your {formatCurrency(loggedInSalary)} monthly salary</p>
           </div>
         </div>
+        </>
+        ) : (
+          <div className="mt-7 border-t border-zinc-800 pt-6 text-sm text-zinc-500">
+            Add your first expense to generate a forecast from your own data.
+          </div>
+        )}
 
+        {dashboardExpenses.length > 0 && (
         <div className="mt-6 border-t border-zinc-800 pt-5 text-sm leading-6 text-zinc-400">
           {weeklyTrendPercentage < 0 ? (
             <p>
@@ -509,12 +808,13 @@ function App() {
             </p>
           )}
         </div>
+        )}
       </div>
 
       <div className="mt-8 rounded-3xl border border-zinc-800 bg-zinc-950 p-5 sm:p-7">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h3 className="text-xl font-bold">Today's expenses</h3>
+            <h3 className="text-xl font-bold">Your expenses</h3>
             <p className="mt-1 text-sm text-zinc-600">
               Add a purchase to update your dashboard.
             </p>
@@ -630,7 +930,7 @@ function App() {
             <div>
               <div className="flex items-end justify-between">
                 <div>
-                  <p className="text-sm text-zinc-600">Added today</p>
+                  <p className="text-sm text-zinc-600">Total recorded</p>
                   <p className="mt-1 text-3xl font-black">{formatCurrency(dashboardTotal)}</p>
                 </div>
                 <span className="text-sm text-zinc-600">{dashboardExpenses.length} {dashboardExpenses.length === 1 ? "expense" : "expenses"}</span>
@@ -665,15 +965,15 @@ function App() {
                     {Object.keys(dashboardCategoryTotals).map((categoryName, index) => (
                       <Cell
                         key={categoryName}
-                        fill={["#ffffff", "#a1a1aa", "#71717a", "#52525b", "#3f3f46", "#d4d4d8"][index % 6]}
+                        fill={["#f8fbff", "#b7c9dc", "#71839a", "#2d4563", "#1b2d46", "#dceeff"][index % 6]}
                       />
                     ))}
                   </Pie>
                   <Tooltip
                     formatter={(value) => `₹${Number(value).toLocaleString("en-IN")}`}
                     contentStyle={{
-                      backgroundColor: "#09090b",
-                      border: "1px solid #27272a",
+                      backgroundColor: "#0d1b2f",
+                      border: "1px solid #1b2d46",
                       borderRadius: "12px",
                       color: "#ffffff",
                     }}
@@ -681,11 +981,150 @@ function App() {
                 </PieChart>
               </ResponsiveContainer>
               <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-                <span className="text-xs text-zinc-600">TODAY</span>
+                <span className="text-xs text-zinc-600">TOTAL</span>
                 <span className="mt-1 text-xl font-black">{formatCurrency(dashboardTotal)}</span>
               </div>
             </div>
           </div>
+        )}
+      </div>
+
+      <div className="mt-8 grid gap-3 lg:grid-cols-[1.25fr_0.75fr]">
+        <div className="rounded-3xl border border-zinc-800 bg-zinc-950 p-5 sm:p-7 animate-fade-up">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.2em] text-zinc-600">Spending timeline</p>
+              <h3 className="mt-2 text-xl font-bold">Your recent rhythm</h3>
+            </div>
+            <CalendarDays size={20} className="text-zinc-600" />
+          </div>
+
+          {dashboardExpenses.length > 0 ? (
+            <div className="mt-6 space-y-5">
+              {Object.entries(
+                dashboardExpenses
+                  .filter((expense) => getExpenseDate(expense) >= heatmap[54].date)
+                  .sort((first, second) => getExpenseDate(second) - getExpenseDate(first))
+                  .reduce((groups, expense) => {
+                    const dateKey = getExpenseDate(expense).toISOString().slice(0, 10);
+                    groups[dateKey] ||= [];
+                    groups[dateKey].push(expense);
+                    return groups;
+                  }, {})
+              ).slice(0, 6).map(([dateKey, dayExpenses]) => (
+                <div key={dateKey} className="flex gap-4 border-l border-zinc-700 pl-4">
+                  <div className="min-w-20">
+                    <p className="text-sm font-semibold">{new Date(`${dateKey}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}</p>
+                    <p className="mt-1 text-xs text-zinc-600">{dayExpenses.length} {dayExpenses.length === 1 ? "entry" : "entries"}</p>
+                  </div>
+                  <div className="min-w-0 flex-1 space-y-2">
+                    {dayExpenses.map((expense) => (
+                      <div key={expense.id} className="flex items-center justify-between gap-3 text-sm">
+                        <span className="truncate text-zinc-400">{expense.description || expense.category}</span>
+                        <span className="shrink-0 font-semibold">{formatCurrency(expense.amount)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-6 text-sm text-zinc-500">Your timeline will appear after your first expense.</p>
+          )}
+        </div>
+
+        <div className="rounded-3xl border border-zinc-800 bg-zinc-950 p-5 sm:p-7 animate-fade-up">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.2em] text-zinc-600">Pattern watch</p>
+              <h3 className="mt-2 text-xl font-bold">Recurring expenses</h3>
+            </div>
+            <Repeat2 size={20} className="text-zinc-600" />
+          </div>
+          {recurringExpenses.length > 0 ? (
+            <div className="mt-6 space-y-3">
+              {recurringExpenses.slice(0, 4).map((item) => (
+                <div key={`${item.category}-${item.description}`} className="flex items-center justify-between gap-3 border-b border-zinc-800 pb-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold">{item.description}</p>
+                    <p className="mt-1 text-xs text-zinc-600">{item.count} entries · {item.category}</p>
+                  </div>
+                  <span className="shrink-0 text-sm font-bold">{formatCurrency(item.average)}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-6 text-sm text-zinc-500">Repeated descriptions will appear here as patterns emerge.</p>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-8 rounded-3xl border border-zinc-800 bg-zinc-950 p-5 sm:p-7 animate-fade-up">
+        <div className="flex items-start justify-between">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[0.2em] text-zinc-600">Spending heatmap</p>
+            <h3 className="mt-2 text-xl font-bold">Your last 12 weeks</h3>
+          </div>
+          <span className="text-xs text-zinc-600">Each square is one day</span>
+        </div>
+        <div className="mx-auto mt-6 max-w-xl rounded-2xl border border-zinc-800/80 bg-black/40 p-4 sm:p-5">
+          <div className="grid grid-cols-12 gap-2.5 sm:gap-3">
+          {heatmap.map((cell) => {
+            const intensity = cell.amount === 0 ? "bg-zinc-900" : cell.amount < 500 ? "bg-zinc-700" : cell.amount < 1200 ? "bg-blue-900" : cell.amount < 2200 ? "bg-blue-700" : "bg-blue-400";
+            return <div key={cell.date.toISOString()} title={`${cell.date.toLocaleDateString("en-IN")}: ${formatCurrency(cell.amount)}`} className={`aspect-square min-w-0 rounded-md shadow-sm transition duration-200 hover:scale-125 hover:shadow-lg ${intensity}`} />;
+          })}
+          </div>
+          <div className="mt-4 flex items-center justify-end gap-2 text-[10px] text-zinc-600">
+            Less
+            <span className="h-3 w-3 rounded-sm bg-zinc-900" />
+            <span className="h-3 w-3 rounded-sm bg-zinc-700" />
+            <span className="h-3 w-3 rounded-sm bg-blue-900" />
+            <span className="h-3 w-3 rounded-sm bg-blue-700" />
+            <span className="h-3 w-3 rounded-sm bg-blue-400" />
+            More
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-8 rounded-3xl border border-zinc-800 bg-zinc-950 p-5 sm:p-7 animate-fade-up">
+        <div className="flex items-start justify-between">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[0.2em] text-zinc-600">Financial goals</p>
+            <h3 className="mt-2 text-xl font-bold">Give your money a destination</h3>
+          </div>
+          <Target size={21} className="text-zinc-600" />
+        </div>
+
+        <p className="mt-2 text-sm text-zinc-500">Set a target for this month and track your progress before the month closes.</p>
+
+        <div className="mt-6 grid gap-3 sm:grid-cols-4">
+          <input value={goalTitle} onChange={(event) => setGoalTitle(event.target.value)} placeholder="Goal name" className="rounded-xl border border-zinc-800 bg-black px-3 py-3 text-sm outline-none focus:border-zinc-500" />
+          <input type="number" min="0" value={goalTargetAmount} onChange={(event) => setGoalTargetAmount(event.target.value)} placeholder="Target amount" className="rounded-xl border border-zinc-800 bg-black px-3 py-3 text-sm outline-none focus:border-zinc-500" />
+          <input type="number" min="0" value={goalSavedAmount} onChange={(event) => setGoalSavedAmount(event.target.value)} placeholder="Already saved" className="rounded-xl border border-zinc-800 bg-black px-3 py-3 text-sm outline-none focus:border-zinc-500" />
+          <button onClick={handleCreateGoal} disabled={!goalTitle.trim() || !goalTargetAmount} className="rounded-xl bg-white px-3 py-3 text-sm font-bold text-black transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-30">ADD GOAL</button>
+        </div>
+
+        {goals.length > 0 ? (
+          <div className="mt-7 grid gap-3 sm:grid-cols-2">
+            {goals.map((goal) => {
+              const progress = Math.min((Number(goal.savedAmount) / Number(goal.targetAmount)) * 100, 100);
+              return (
+                <div key={goal.id} className="rounded-2xl border border-zinc-800 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-semibold">{goal.title}</p>
+                      <p className="mt-1 text-xs text-zinc-600">{formatCurrency(goal.savedAmount)} of {formatCurrency(goal.targetAmount)}</p>
+                    </div>
+                    <button onClick={() => handleDeleteGoal(goal.id)} className="text-xs text-zinc-600 transition hover:text-white">Remove</button>
+                  </div>
+                  <div className="mt-4 h-2 overflow-hidden rounded-full bg-zinc-900"><div className="h-full rounded-full bg-blue-400 transition-all duration-700" style={{ width: `${progress}%` }} /></div>
+                  <p className="mt-2 text-xs text-zinc-600">{progress.toFixed(0)}% complete · Current month</p>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="mt-6 text-sm text-zinc-500">Create a goal to start tracking progress.</p>
         )}
       </div>
 
@@ -705,7 +1144,7 @@ function App() {
                 <span className="text-[10px] text-zinc-600">₹{(day.amount / 1000).toFixed(1)}k</span>
                 <div
                   className="w-full max-w-10 rounded-t-lg bg-zinc-300 transition-all hover:bg-white"
-                  style={{ height: `${Math.max((day.amount / highestWeeklySpend) * 78, 8)}%` }}
+                  style={{ height: `${highestWeeklySpend > 0 ? Math.max((day.amount / highestWeeklySpend) * 78, 8) : 8}%` }}
                 />
                 <span className="pb-3 text-xs font-semibold text-zinc-500">{day.day}</span>
               </div>
@@ -715,7 +1154,7 @@ function App() {
 
         <div className="rounded-3xl border border-zinc-800 bg-zinc-950 p-5 sm:p-7">
           <h3 className="text-xl font-bold">Where it went</h3>
-          <p className="mt-1 text-sm text-zinc-600">Top categories this week</p>
+                <p className="mt-1 text-sm text-zinc-600">Your recorded categories</p>
 
           <div className="mt-8 space-y-6">
             {weeklyCategories.map((item) => (
@@ -727,7 +1166,7 @@ function App() {
                 <div className="mt-2 h-2 rounded-full bg-zinc-900">
                   <div
                     className={`h-2 rounded-full ${item.color}`}
-                    style={{ width: `${(item.amount / weeklyTotal) * 100}%` }}
+                    style={{ width: `${dashboardTotal > 0 ? (item.amount / dashboardTotal) * 100 : 0}%` }}
                   />
                 </div>
               </div>
@@ -738,19 +1177,25 @@ function App() {
 
       <div className="mt-8 grid gap-3 sm:grid-cols-3">
         <div className="rounded-3xl border border-zinc-800 bg-zinc-950 p-6">
-          <p className="text-xs font-bold uppercase tracking-[0.2em] text-zinc-600">Best day</p>
-          <p className="mt-3 text-2xl font-black">Tuesday</p>
-          <p className="mt-1 text-sm text-zinc-500">Only ₹860 spent</p>
+          <p className="text-xs font-bold uppercase tracking-[0.2em] text-zinc-600">Lowest day</p>
+          <p className="mt-3 text-2xl font-black">{lowestSpendDay?.day || "No data"}</p>
+          <p className="mt-1 text-sm text-zinc-500">
+            {lowestSpendDay ? `${formatCurrency(lowestSpendDay.amount)} recorded` : "Add expenses to see this."}
+          </p>
         </div>
         <div className="rounded-3xl border border-zinc-800 bg-zinc-950 p-6">
           <p className="text-xs font-bold uppercase tracking-[0.2em] text-zinc-600">Watch this</p>
-          <p className="mt-3 text-2xl font-black">Food</p>
-          <p className="mt-1 text-sm text-zinc-500">54% of your weekly spend</p>
+          <p className="mt-3 text-2xl font-black">{topCategory?.name || "No data"}</p>
+          <p className="mt-1 text-sm text-zinc-500">
+            {topCategory && dashboardTotal > 0 ? `${((topCategory.amount / dashboardTotal) * 100).toFixed(1)}% of recorded spend` : "Add expenses to see this."}
+          </p>
         </div>
         <div className="rounded-3xl border border-zinc-800 bg-zinc-950 p-6">
           <p className="text-xs font-bold uppercase tracking-[0.2em] text-zinc-600">Weekly rhythm</p>
-          <p className="mt-3 text-2xl font-black">Steady</p>
-          <p className="mt-1 text-sm text-zinc-500">One high-spend day to review</p>
+          <p className="mt-3 text-2xl font-black">{weeklyRhythm}</p>
+          <p className="mt-1 text-sm text-zinc-500">
+            {weeklyTotal > 0 ? "Based on your last 7 days." : "Add expenses to see this."}
+          </p>
         </div>
       </div>
 
